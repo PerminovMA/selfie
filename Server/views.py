@@ -392,6 +392,11 @@ def set_review_request(request):
         return HttpResponse(
             make_error(explanation="missing required argument", errorid="1", userid=user_id, functionName="set_review_request"))
 
+    if valuation != Review.VALUATION_CHOICES[0][0] and valuation != Review.VALUATION_CHOICES[1][0] and valuation != \
+            Review.VALUATION_CHOICES[2][0] and valuation != Review.VALUATION_CHOICES[3][0] and valuation != \
+            Review.VALUATION_CHOICES[4][0]:
+        return HttpResponse(make_error(explanation="bad valuation format", errorid="14", userid=user_id, functionName="set_review_request"))
+
     try:
         user = User.objects.select_related('token').get(id = user_id)
         if token == user.token.token:
@@ -403,6 +408,3 @@ def set_review_request(request):
     except (ObjectDoesNotExist, MultipleObjectsReturned):
         return HttpResponse(
             make_error(explanation="user id does not exists", errorid="3", userid=user_id, functionName="set_review_request"))
-
-
-# test comment
