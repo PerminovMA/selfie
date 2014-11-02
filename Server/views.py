@@ -11,6 +11,7 @@ from gcm.models import Device
 from django.conf import settings
 from django.db import IntegrityError
 from properties import MAX_FILE_SIZE
+from django.db.models import F
 
 #@ratelimit(block=True, rate='50/h')
 @csrf_exempt
@@ -152,41 +153,47 @@ def send_message_request(request):
         return HttpResponse(
             make_error(explanation="missing required argument", errorid="1", functionName="send_message_request"))
 
-    if from_user_id == to_user_id:
-        return HttpResponse(
-            make_error(explanation="from_user may not be = to_user", errorid="?", functionName="send_message_request"))
+    # this block temproly commented
+    #if from_user_id == to_user_id:
+    #    return HttpResponse(
+    #        make_error(explanation="from_user may not be = to_user", errorid="?", functionName="send_message_request"))
 
     if photo_file.size > MAX_FILE_SIZE or preview_file.size > MAX_FILE_SIZE:
         return HttpResponse(
             make_error(explanation="file too large", errorid="38", functionName="send_message_request"))
 
     try:
-        from_user = User.objects.select_related('token').get(id = from_user_id)
-        to_user = User.objects.select_related('gcm_device').get(id = to_user_id)
-        #to_user = User.objects.get(id = to_user_id)  # deprecated
+        from_user = User.objects.defer('id', 'count_outgoing_messages', 'lastActivity').select_related('token').get(id = from_user_id)
+        to_user = User.objects.defer('id', 'count_incoming_messages').select_related('gcm_device').get(id = to_user_id)
         if token == from_user.token.token:
             message = Message(to_user = to_user, from_user = from_user, text = unicode(text, "utf-8"), photo = photo_file, preview = preview_file)
             message.save()
-            from_user.save(update_fields=['lastActivity'])
-
-            # send push via Google Cloud Messages
-            if to_user.gcm_device is not None:
-                to_user.gcm_device.send_message("push")
+            from_user.count_outgoing_messages = F('count_outgoing_messages') + 1
+            from_user.save(update_fields=['lastActivity', 'count_outgoing_messages'])
+            count_incoming_messages_buf = to_user.count_incoming_messages + 1
+            to_user.count_incoming_messages = F('count_incoming_messages') + 1
+            to_user.save(update_fields=['count_incoming_messages'])
 
             # if this message is answer for another message we remove it
             if answer_for_mes_id is not None:
                 try:
                     Message.objects.get(id = answer_for_mes_id).delete()
                 except (ObjectDoesNotExist, MultipleObjectsReturned):
-                    pass
+                    return HttpResponse(make_error(explanation="message with that message_id not exist", errorid="40", functionName="send_message_request"))
+
+            # send push via Google Cloud Messages
+            try:
+                if to_user.gcm_device is not None:
+                    to_user.gcm_device.send_message('"count_incoming_messages": "' + str(count_incoming_messages_buf) + '"')
+            except Exception as e:
+                return HttpResponse(make_error(explanation="some error with GCM: " + e.message, errorid="1000", functionName="send_message_request"))
 
             return HttpResponse('{"report" : "success", "explanation": "message has been sended", "token": "' + token_update(from_user) + '"}')
         else:
             return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=from_user.id,
                                            functionName="send_message_request"))
     except (ObjectDoesNotExist, MultipleObjectsReturned):
-        return HttpResponse(
-            make_error(explanation="user id does not exists", errorid="3", functionName="send_message_request"))
+        return HttpResponse(make_error(explanation="user id does not exists", errorid="3", functionName="send_message_request"))
 
 
 #@ratelimit(block=True, rate='10/m')
@@ -203,7 +210,7 @@ def get_message_request(request):
             make_error(explanation="missing required argument", errorid="1", functionName="get_message_request"))
 
     try:
-        user = User.objects.select_related('token').get(id = user_id)
+        user = User.objects.defer('id', 'count_incoming_messages').select_related('token').get(id = user_id)
         if token == user.token.token:
             messages = Message.objects.select_related('from_user').filter(to_user = user, is_read = '0')
 
@@ -217,7 +224,7 @@ def get_message_request(request):
                 messages_list.append({"from_name": e.from_user.name, "from_id": str(e.from_user.id), "datetime": str(e.send_time), "message_id": str(e.id), "from_country": e.from_user.country, "from_city": e.from_user.city, "text": e.text, "photo": e.photo.url, "preview": e.preview.url})
 
             # messages.update(is_read = '1')
-            return HttpResponse('{"report" : "success", "explanation": "messages list has been returned", "messages":' + json.dumps(messages_list, ensure_ascii = False) + ', "token": "' + token_update(user) + '"}')
+            return HttpResponse('{"report" : "success", "explanation": "messages list has been returned", "count_incoming_messages": "' + str(user.count_incoming_messages) + '", "messages":' + json.dumps(messages_list, ensure_ascii = False) + ', "token": "' + token_update(user) + '"}')
 
         else:
             return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id,
@@ -306,11 +313,21 @@ def get_feed_request(request):
         return HttpResponse(
             make_error(explanation="Sample error. Refer to Misha", errorid="21", functionName="get_feed_request"))
 
+    # temporary block. for test.
+    additional_sample = []
+    if len(sample) < 15:
+        exclude_list = [user_id]
+        for e in sample:
+            exclude_list.append(e['id'])
+        additional_sample = User.objects.exclude(id__in = exclude_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+    sample = list(sample) + list(additional_sample)
+    # end temporary block. for test.
+
     for e in sample:
         e['avatar'] = settings.MEDIA_URL + e['avatar']
 
     # return HttpResponse(json.dumps(list(sample)))
-    return HttpResponse('{"report" : "success", "explanation": "feed has been returned", "users": '+ json.dumps(list(sample), ensure_ascii = False) +'}')
+    return HttpResponse('{"report" : "success", "explanation": "feed has been returned", "count_incoming_messages": "' + str(user.count_incoming_messages) + '", "users": '+ json.dumps(list(sample), ensure_ascii = False) +'}')
 
 
 #@ratelimit(block=True, rate='10/m')

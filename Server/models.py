@@ -64,6 +64,8 @@ class User(models.Model):
     city = models.CharField(max_length=50, null=True, blank=False)
     country = models.CharField(max_length=50, null=True, blank=False)
     gcm_device = models.ForeignKey(Device, null=True, blank=True)  # google cloud messages obj (django_gcm module) for send push messages
+    count_incoming_messages = models.PositiveIntegerField(default=0)  # total count incoming messages
+    count_outgoing_messages = models.PositiveIntegerField(default=0)  # total count outgoing messages
 
     def __unicode__(self):
         return self.email
