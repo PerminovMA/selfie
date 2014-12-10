@@ -52,6 +52,13 @@ class User(models.Model):
         (FEMALE, 'female'),
     )
 
+    TYPE_OF_USER_STATE = (
+        ("0", "Active."),
+        ("1", "Banned."),
+        ("2", "Active. Avatar is not verified."),
+        ("3", "Need to change the avatar."),
+    )
+
     name = models.CharField(max_length=25, null=False, blank=False)
     email = models.EmailField(db_index=True, null=False, blank=False, unique=True)
     age = models.CharField(choices=TYPE_OF_AGE, max_length=1, null=False, blank=False, db_index=True)  # "1" or "2" or "3"
@@ -66,6 +73,10 @@ class User(models.Model):
     gcm_device = models.ForeignKey(Device, null=True, blank=True)  # google cloud messages obj (django_gcm module) for send push messages
     count_incoming_messages = models.PositiveIntegerField(default=0)  # total count incoming messages
     count_outgoing_messages = models.PositiveIntegerField(default=0)  # total count outgoing messages
+    locale = models.CharField(max_length=3, null=False, blank=False, default="en")
+    device_model = models.CharField(max_length=50, null=True, blank=True)
+    app_version = models.CharField(max_length=20, null=True, blank=True)
+    user_state = models.CharField(choices=TYPE_OF_USER_STATE, max_length=2, null=False, blank=False, default=TYPE_OF_USER_STATE[2][0])
 
     def __unicode__(self):
         return self.email
@@ -132,3 +143,11 @@ class Review(models.Model):
 
     def __unicode__(self):
         return str(self.valuation)
+
+
+class Feedback(models.Model):
+    feedback_text = models.CharField(max_length=255, null=False, blank=True)
+    from_user = models.ForeignKey(User)
+
+    def __unicode__(self):
+        return str(self.from_user)

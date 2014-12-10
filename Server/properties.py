@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 __author__ = 'Mihail'
 
 TOKEN_UPDATE_INTERVAL = 3600

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title></title>
+</head>
+<body>
+    {% if users %}
+        <form method="post">
+            <table border="2">
+                <tr>
+                    <th>Информация о пользователе</th><th>Аватар</th><th>Подтвердить?</th><th>Отклонить</th><th>Забанить</th>
+                </tr>
+                {% for user in users %}
+                <tr>
+                    <td> <b>id:</b> {{ user.id }} <br> <b>Имя:</b> {{ user.name }} <br> <b>Пол:</b> {{ user.sex }} <br> <b>Возраст:</b> {{ user.age }} <br> <b>Страна:</b> {{ user.country }} <br> <b>Город:</b> {{ user.city }} <br> <b>E-Mail:</b> {{ user.email }} </td>
+                    <td> {% if user.avatar %} <img width="453" src="{{ user.avatar.url }}"> {% else %} Аватар не найден {% endif %}</td>
+                    <td align="center" style="background-color: #6bed3d"><input name="confirmation_user_ids[]" type="checkbox" value="{{ user.id }}"></td>
+                    <td align="center" style="background-color: #e9ed0b"><input name="denial_user_ids[]" type="checkbox" value="{{ user.id }}"></td>
+                    <td align="center" style="background-color: #ed1200"><input name="banned_user_ids[]" type="checkbox" value="{{ user.id }}"></td>
+                </tr>
+                {% endfor %}
+            </table>
+            <input type="submit">
+        </form>
+    {% else %}
+        Непроверенных пользователей нет
+    {% endif %}
+</body>
+</html>

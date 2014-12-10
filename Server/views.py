@@ -2,7 +2,7 @@
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from tools import check_if_email_exists, make_error, get_new_token, token_update, remove_messages
-from models import User, Message, Review
+from models import User, Message, Review, Feedback
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 import json
 from django.utils import timezone
@@ -10,8 +10,12 @@ from datetime import timedelta
 from gcm.models import Device
 from django.conf import settings
 from django.db import IntegrityError
-from properties import MAX_FILE_SIZE
 from django.db.models import F
+from selphy.settings import MEDIA_URL
+from properties import MAX_FILE_SIZE
+# import logging
+
+# logger = logging.getLogger(__name__)
 
 #@ratelimit(block=True, rate='50/h')
 @csrf_exempt
@@ -22,10 +26,13 @@ def check_email_exists_request(request):
         return HttpResponse(
             make_error(explanation="missing requirement argument", errorid="1", functionName="check_email_exists"))
     try:
-        user = User.objects.select_related('token').get(email=email)
+        user = User.objects.select_related('token').get(email__icontains=email)
         return HttpResponse(
             '{"report": "success", "explanation": "email already exists", "match": "true", "user_id": "' + str(
-                user.id) + '", "token": "' + str(user.token.token) + '", "sex": "' + user.sex + '", "name":"' + user.name + '", "avatar":"' + (user.avatar.url if user.avatar else "None") + '", "age": "' + user.age + '", "status": "' + user.status + '"}')
+                user.id) + '", "token": "' + str(
+                user.token.token) + '", "sex": "' + user.sex + '", "name":"' + user.name + '", "avatar":"' + (
+                user.avatar.url if user.avatar else "None") + '", "age": "' + user.age + '", "status": "' +
+                user.status + '", "city": "' + user.city + '", "country": "' + user.country + '"}')
     except (ObjectDoesNotExist, MultipleObjectsReturned):
         return HttpResponse('{"report": "success", "explanation": "email not exists", "match": "false"}')
 
@@ -40,16 +47,19 @@ def add_user_request(request):
     name = None if request.POST.get("name") is None else request.POST.get("name").encode("utf-8").strip()
     country = None if request.POST.get("country") is None else request.POST.get("country").__str__().strip()
     city = None if request.POST.get("city") is None else request.POST.get("city").__str__().strip()
+    locale = "en" if request.POST.get("locale") is None or len(request.POST.get("locale").__str__().strip()) > 2 else request.POST.get("locale").__str__().strip()
+    device_model = None if request.POST.get("device_model") is None or request.POST.get("device_model") in ("Unknown", '') else request.POST.get("device_model").__str__().strip()
+    app_version = None if request.POST.get("app_version") is None or request.POST.get("app_version") in ("Unknown", '') else request.POST.get("app_version").__str__().strip()
 
     photo_file = None if request.FILES.get("file") is None else request.FILES.get("file")
-    status = None if request.POST.get("status") is None else request.POST.get("status").encode("utf-8").strip()
-    if photo_file is None or status is None:
+    status = "" if request.POST.get("status") is None else request.POST.get("status").encode("utf-8").strip()
+    if photo_file is None:
         return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="add_user"))
     if photo_file.size > MAX_FILE_SIZE:
         return HttpResponse(
             make_error(explanation="file too large", errorid="38", functionName="add_user"))
 
-    if request.POST.get("gcm_reg_id") is None or request.POST.get("gcm_reg_id") is "" or request.POST.get("device_id") is None or request.POST.get("device_id") is "":
+    if request.POST.get("gcm_reg_id") is None or request.POST.get("gcm_reg_id") == "" or request.POST.get("device_id") is None or request.POST.get("device_id") == "":
         gcm_reg_id = None
     else:
         gcm_reg_id = request.POST.get("gcm_reg_id").__str__().strip()
@@ -86,55 +96,11 @@ def add_user_request(request):
 
     current_token = get_new_token()
 
-    u = User(name=unicode(name, "utf-8"), email=email, age=age_range, sex=sex, status=unicode(status, "utf-8"), avatar=photo_file, token=current_token, country=country, city=city, gcm_device=gcm_device)
+    u = User(name=unicode(name, "utf-8"), email=email, age=age_range, sex=sex, status=unicode(status, "utf-8"), avatar=photo_file, token=current_token, country=country, city=city, gcm_device=gcm_device, locale = locale, device_model = device_model, app_version = app_version)
     u.save()
     return HttpResponse(
         '{"report" : "success", "explanation": "user has been added", "token": "' + current_token.token.__str__() + '", "user_id": "' + str(
             u.id) + '"}')
-
-
-#@ratelimit(block=True, rate='10/m')
-@csrf_exempt
-def change_avatar_request(request):
-    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
-    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
-    photo_file = None if request.FILES.get("file") is None else request.FILES.get("file")
-    status = None if request.POST.get("status") is None else request.POST.get("status").encode("utf-8").strip()
-
-    if user_id is None or user_id == '' or photo_file is None or token is None:
-        return HttpResponse(
-            make_error(explanation="missing required argument", errorid="1", functionName="change_avatar_request"))
-
-    if photo_file.size > MAX_FILE_SIZE:
-        return HttpResponse(
-            make_error(explanation="file too large", errorid="38", functionName="change_avatar_request"))
-
-    try:
-        user = User.objects.select_related('token').get(id=user_id)
-        if token == user.token.token:
-            if user.avatar.name == '':
-                user.avatar = photo_file
-                user.status = unicode(status, "utf-8")
-                user.save(update_fields=['avatar', 'lastActivity', 'status'])
-                return HttpResponse(
-                    '{"report" : "success", "explanation": "avatar has been changed", "token": "' + token_update(
-                        user) + '", "user_id": "' + str(user.id) + '"}')
-            else:
-                user.avatar.delete()
-                user.avatar = photo_file
-                user.status = unicode(status, "utf-8")
-                user.save()
-                return HttpResponse(
-                    '{"report" : "success", "explanation": "avatar has been changed", "token": "' + token_update(
-                        user) + '", "user_id": "' + str(user.id) + '"}')
-        else:
-            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id,
-                                           functionName="change_avatar_request"))
-
-        return HttpResponse(str(user.avatar is None))
-    except (ObjectDoesNotExist, MultipleObjectsReturned):
-        return HttpResponse(
-            make_error(explanation="user id does not exists", errorid="3", functionName="change_avatar_request"))
 
 
 #@ratelimit(block=True, rate='10/m')
@@ -184,7 +150,7 @@ def send_message_request(request):
             # send push via Google Cloud Messages
             try:
                 if to_user.gcm_device is not None:
-                    to_user.gcm_device.send_message('"count_incoming_messages": "' + str(count_incoming_messages_buf) + '"')
+                    to_user.gcm_device.send_message('{"count_incoming_messages": "' + str(count_incoming_messages_buf) + '"}')
             except Exception as e:
                 return HttpResponse(make_error(explanation="some error with GCM: " + e.message, errorid="1000", functionName="send_message_request"))
 
@@ -247,6 +213,8 @@ def get_feed_request(request):
     user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
     token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
 
+    # logger.debug("get_feed_request: START, user_id= " + str(user_id)) # temp
+
     if user_id is None or token is None:
         return HttpResponse(
             make_error(explanation="missing required argument", errorid="1", functionName="get_feed_request"))
@@ -285,24 +253,37 @@ def get_feed_request(request):
 
     #slice = randint(0, DEEP_SAMPLE_COUNT - COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME)
 
+    # logger.debug("get_feed_request: sex: " + str(sex) + " age_range: " + str(age_range)) # temp
+
     if sex != User.SEX_ANY and age_range != User.AGE_RANGE_ANY:
         sample = User.objects.filter(sex = sex, age = age_range, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+        # logger.debug("get_feed_request: level1, len(sample)= " + str(len(sample))) # temp
         if len(sample) < 15:
             sample = User.objects.filter(sex = sex, age = age_range).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+            # logger.debug("get_feed_request: level2, len(sample)= " + str(len(sample))) # temp
             if len(sample) < 15:
-                sample = User.objects.filter(sex = sex, age = age_range).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                if sex == User.MALE:
+                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                else:
+                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                    # logger.debug("get_feed_request: level3, len(sample)= " + str(len(sample))) # temp
+                # sample = User.objects.filter(sex = sex, age = age_range).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
     elif sex == User.SEX_ANY and age_range != User.AGE_RANGE_ANY:
         sample = User.objects.filter(age = age_range, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         if len(sample) < 15:
             sample = User.objects.filter(age = age_range).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
             if len(sample) < 15:
-                sample = User.objects.filter(age = age_range).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
     elif sex != User.SEX_ANY and age_range == User.AGE_RANGE_ANY:
         sample = User.objects.filter(sex = sex, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         if len(sample) < 15:
             sample = User.objects.filter(sex = sex).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
             if len(sample) < 15:
-                sample = User.objects.filter(sex = sex).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                #sample = User.objects.filter(sex = sex).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                if sex == User.MALE:
+                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                else:
+                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
     elif sex == User.SEX_ANY and age_range == User.AGE_RANGE_ANY:
         sample = User.objects.filter(lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         if len(sample) < 15:
@@ -313,21 +294,10 @@ def get_feed_request(request):
         return HttpResponse(
             make_error(explanation="Sample error. Refer to Misha", errorid="21", functionName="get_feed_request"))
 
-    # temporary block. for test.
-    additional_sample = []
-    if len(sample) < 15:
-        exclude_list = [user_id]
-        for e in sample:
-            exclude_list.append(e['id'])
-        additional_sample = User.objects.exclude(id__in = exclude_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
-    sample = list(sample) + list(additional_sample)
-    # end temporary block. for test.
-
     for e in sample:
         e['avatar'] = settings.MEDIA_URL + e['avatar']
 
-    # return HttpResponse(json.dumps(list(sample)))
-    return HttpResponse('{"report" : "success", "explanation": "feed has been returned", "count_incoming_messages": "' + str(user.count_incoming_messages) + '", "users": '+ json.dumps(list(sample), ensure_ascii = False) +'}')
+    return HttpResponse('{"report" : "success", "explanation": "feed has been returned", "user_state": "' + user.user_state + '", "count_incoming_messages": "' + str(user.count_incoming_messages) + '", "users": '+ json.dumps(list(sample), ensure_ascii = False) +'}')
 
 
 #@ratelimit(block=True, rate='10/m')
@@ -396,7 +366,6 @@ def set_gcm_reg_id_request(request):
             make_error(explanation="user id does not exists", errorid="3", userid=user_id, functionName="set_gcm_reg_id_request"))
 
 
-#@ratelimit(block=True, rate='10/m')
 @csrf_exempt
 def set_review_request(request):
     user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
@@ -425,3 +394,117 @@ def set_review_request(request):
     except (ObjectDoesNotExist, MultipleObjectsReturned):
         return HttpResponse(
             make_error(explanation="user id does not exists", errorid="3", userid=user_id, functionName="set_review_request"))
+#@ratelimit(block=True, rate='10/m')
+
+
+@csrf_exempt
+def get_fake_message_request(request):
+    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
+    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
+
+    if user_id is None or token is None:
+        return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="get_fake_message_request"))
+
+    MESSAGE_FOR_MALE = '{"from_name": "Anna", "from_country": "USA", "from_city": "Texas", "text": "Hi!)))", "photo": "' + MEDIA_URL + 'avatars/fake_woman.jpg' + '", "preview": "' + MEDIA_URL + 'previews/fake_woman_preview.jpg' + '"}'
+    MESSAGE_FOR_FEMALE = '{"from_name": "Max", "from_country": "USA", "from_city": "Texas", "text": "Hi!)))", "photo": "' + MEDIA_URL + 'avatars/fake_man.jpg' + '", "preview": "' + MEDIA_URL + 'previews/fake_man_preview.jpg' + '"}'
+
+    try:
+        user = User.objects.select_related('token').get(id = user_id)
+        if token != user.token.token:
+            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id, functionName="get_fake_message_request"))
+    except (ObjectDoesNotExist, MultipleObjectsReturned):
+        return HttpResponse(
+            make_error(explanation="user id does not exists", errorid="3", functionName="get_fake_message_request"))
+
+    if user.sex == User.MALE:
+        return HttpResponse('{"report" : "success", "explanation": "messages list has been returned", "message": ' + MESSAGE_FOR_MALE + '}')
+    else:
+        return HttpResponse('{"report" : "success", "explanation": "messages list has been returned", "message": ' + MESSAGE_FOR_FEMALE + '}')
+
+
+@csrf_exempt
+def change_location_request(request): # deprecated 06.12.14
+    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
+    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
+
+    if user_id is None or token is None:
+        return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="change_location_request"))
+
+    try:
+        country = None if request.POST.get("country") is None else request.POST.get("country").__str__().strip()
+        city = None if request.POST.get("city") is None else request.POST.get("city").__str__().strip()
+    except UnicodeEncodeError as errObj:
+        return HttpResponse(
+            make_error(explanation= errObj.__str__(), errorid="41", functionName="change_location_request"))
+
+    if (country is not None and len(country) == 0) or (city is not None and len(city) == 0):
+        return HttpResponse(
+            make_error(explanation="country or city is too short", errorid="37", functionName="change_location_request"))
+
+    try:
+        user = User.objects.select_related('token').get(id = user_id)
+        if token != user.token.token:
+            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id, functionName="change_location_request"))
+    except (ObjectDoesNotExist, MultipleObjectsReturned):
+        return HttpResponse(
+            make_error(explanation="user id does not exists", errorid="3", functionName="change_location_request"))
+
+    user.country = country
+    user.city = city
+    user.save(update_fields=['country', 'lastActivity', 'city'])
+
+    return HttpResponse('{"report" : "success", "explanation": "User information updated"}')
+
+
+@csrf_exempt
+def change_gcm_request(request): # deprecated 06.12.14
+    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
+    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
+    device_id = None if request.POST.get("device_id") is None else request.POST.get("device_id").__str__().strip()
+    gcm_reg_id = None if request.POST.get("gcm_reg_id") is None else request.POST.get("gcm_reg_id").__str__().strip()
+
+    if user_id is None or token is None or device_id is None or device_id is "" or gcm_reg_id is None or gcm_reg_id is "":
+        return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="change_gcm_request"))
+
+    try:
+        user = User.objects.select_related('token', 'gcm_device').get(id = user_id)
+        if token != user.token.token:
+            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id, functionName="change_gcm_request"))
+    except (ObjectDoesNotExist, MultipleObjectsReturned):
+        return HttpResponse(
+            make_error(explanation="user id does not exists", errorid="3", functionName="change_gcm_request"))
+
+    if user.gcm_device is None:
+        gcm_device = Device.objects.create(reg_id = gcm_reg_id, name = user.email, is_active = True, dev_id = device_id)
+        user.gcm_device = gcm_device
+        user.save(update_fields=['gcm_device', 'lastActivity'])
+    else:
+        user.gcm_device.dev_id = device_id
+        user.gcm_device.reg_id = gcm_reg_id
+        user.gcm_device.save()
+
+    return HttpResponse('{"report" : "success", "explanation": "User information about gcm updated"}')
+
+
+#@ratelimit(block=True, rate='10/m')
+@csrf_exempt
+def send_feedback_request(request):
+    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
+    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
+    feedback_text = None if request.POST.get("feedback_text") is None else request.POST.get("feedback_text").encode("utf-8").strip()
+
+    if user_id is None or token is None or feedback_text is None or feedback_text == '':
+        return HttpResponse(
+            make_error(explanation="missing required argument", errorid="1", userid=user_id, functionName="give_feedback_request"))
+
+    try:
+        user = User.objects.select_related('token').get(id = user_id)
+        if token != user.token.token:
+            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id, functionName="give_feedback_request"))
+    except (ObjectDoesNotExist, MultipleObjectsReturned):
+        return HttpResponse(
+            make_error(explanation="user id does not exists", errorid="3", functionName="give_feedback_request"))
+
+    Feedback.objects.create(feedback_text = feedback_text, from_user = user)
+
+    return HttpResponse('{"report" : "success", "explanation": "Feedback sent"}')

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title></title>
+</head>
+
+<body>
+    <div style="position: relative; border: 3px solid #edae27;">
+        <div style="margin: 20px;">
+            <p>Отправить push уведомление <b>ВСЕМ</b> пользователям</p>
+            <form method="post">
+                код
+                <select name="notification_type_code">
+                    <option>0</option><option>1</option><option>3</option>
+                </select>
+                ссылка
+                <input type="text" name="link">
+                версия
+                <input type="text" name="app_version">
+
+                <table style="margin-top: 10px;" border="1" id="table_for_messages">
+                    <tr bgcolor="#edae27">
+                        <th>Тема</th><th>Сообщение</th><th>Локаль</th>
+                    </tr>
+                    <tr>
+                        <td><input type="text" name="theme[]"></td><td><input type="text" name="text[]"></td><td><input type="text" name="locale[]"></td>
+                    </tr>
+                </table>
+                <input style="margin-top: 10px;" type="submit">
+            </form>
+        <button style="margin-top: 10px;" onclick="add_row_to_table()">Добавить локаль</button>
+        </div>
+    </div>
+</body>
+
+<script>
+    var count_rows = 1;
+    function add_row_to_table()
+    {
+        var table_obj = document.getElementById('table_for_messages');
+        var new_row_obj = document.createElement('tr');
+        var new_theme_cell_obj = document.createElement('td');
+        var new_text_cell_obj = document.createElement('td');
+        var new_locale_cell_obj = document.createElement('td');
+
+        new_theme_cell_obj.innerHTML = '<input type="text" name="theme[]">';
+        count_rows++;
+        new_text_cell_obj.innerHTML = '<input type="text" name="text[]">';
+        new_locale_cell_obj.innerHTML = '<input type="text" name="locale[]">';
+
+        new_row_obj.appendChild(new_theme_cell_obj);
+        new_row_obj.appendChild(new_text_cell_obj);
+        new_row_obj.appendChild(new_locale_cell_obj);
+        table_obj.appendChild(new_row_obj);
+    }
+</script>
+
+</html>
