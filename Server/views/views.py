@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
-from tools import check_if_email_exists, make_error, get_new_token, token_update, remove_messages
-from models import User, Message, Review, Feedback
+from Server.tools import check_if_email_exists, make_error, get_new_token, token_update, remove_messages
+from Server.models import User, Message, Review, Feedback
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 import json
 from django.utils import timezone
@@ -10,12 +10,12 @@ from datetime import timedelta
 from gcm.models import Device
 from django.conf import settings
 from django.db import IntegrityError
-from django.db.models import F
+from django.db.models import F, Q
 from selphy.settings import MEDIA_URL
-from properties import MAX_FILE_SIZE
-# import logging
+from Server.properties import MAX_FILE_SIZE
 
-# logger = logging.getLogger(__name__)
+import logging
+logger = logging.getLogger(__name__)
 
 #@ratelimit(block=True, rate='50/h')
 @csrf_exempt
@@ -31,7 +31,7 @@ def check_email_exists_request(request):
             '{"report": "success", "explanation": "email already exists", "match": "true", "user_id": "' + str(
                 user.id) + '", "token": "' + str(
                 user.token.token) + '", "sex": "' + user.sex + '", "name":"' + user.name + '", "avatar":"' + (
-                user.avatar.url if user.avatar else "None") + '", "age": "' + user.age + '", "status": "' +
+                user.avatar.url if user.avatar else "None") + '", "age_range": "' + user.age + '", "status": "' +
                 user.status + '", "city": "' + user.city + '", "country": "' + user.country + '"}')
     except (ObjectDoesNotExist, MultipleObjectsReturned):
         return HttpResponse('{"report": "success", "explanation": "email not exists", "match": "false"}')
@@ -52,10 +52,11 @@ def add_user_request(request):
     app_version = None if request.POST.get("app_version") is None or request.POST.get("app_version") in ("Unknown", '') else request.POST.get("app_version").__str__().strip()
 
     photo_file = None if request.FILES.get("file") is None else request.FILES.get("file")
+    preview_photo_file = None if request.FILES.get("preview_file") is None else request.FILES.get("preview_file")
     status = "" if request.POST.get("status") is None else request.POST.get("status").encode("utf-8").strip()
     if photo_file is None:
         return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="add_user"))
-    if photo_file.size > MAX_FILE_SIZE:
+    if photo_file.size > MAX_FILE_SIZE or (preview_photo_file is not None and preview_photo_file.size > MAX_FILE_SIZE):
         return HttpResponse(
             make_error(explanation="file too large", errorid="38", functionName="add_user"))
 
@@ -96,7 +97,7 @@ def add_user_request(request):
 
     current_token = get_new_token()
 
-    u = User(name=unicode(name, "utf-8"), email=email, age=age_range, sex=sex, status=unicode(status, "utf-8"), avatar=photo_file, token=current_token, country=country, city=city, gcm_device=gcm_device, locale = locale, device_model = device_model, app_version = app_version)
+    u = User(name=unicode(name, "utf-8"), email=email, age=age_range, sex=sex, status=unicode(status, "utf-8"), avatar=photo_file, avatar_preview=preview_photo_file, token=current_token, country=country, city=city, gcm_device=gcm_device, locale = locale, device_model = device_model, app_version = app_version)
     u.save()
     return HttpResponse(
         '{"report" : "success", "explanation": "user has been added", "token": "' + current_token.token.__str__() + '", "user_id": "' + str(
@@ -169,7 +170,7 @@ def get_message_request(request):
     token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
 
     # Optional. Removed_message_ids that is json string. Example: '{"message_ids" : [1,2,3]}'
-    remove_message_ids = None if request.POST.get("remove_message_ids") is None else request.POST.get("remove_message_ids").__str__().strip()
+    remove_message_ids = None if request.POST.get("remove_message_ids") is None or request.POST.get("remove_message_ids") == '' else request.POST.get("remove_message_ids").__str__().strip()
 
     if user_id is None or token is None:
         return HttpResponse(
@@ -199,6 +200,8 @@ def get_message_request(request):
         return HttpResponse(
             make_error(explanation="user id does not exists", errorid="3", functionName="get_message_request"))
 
+
+not_banned_condition = Q(user_state = User.TYPE_OF_USER_STATE[0][0]) | Q(user_state = User.TYPE_OF_USER_STATE[2][0]) # for get_feed_request function
 
 #@ratelimit(block=True, rate='10/m')
 @csrf_exempt
@@ -246,63 +249,56 @@ def get_feed_request(request):
         return HttpResponse(
             make_error(explanation="bad json object. in detail: " + str(err), errorid="32", functionName="get_feed_request"))
 
-    #DEEP_SAMPLE_COUNT = 100
     COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME = 15
-
-    # check performance when exclude before and after order_by
-
-    #slice = randint(0, DEEP_SAMPLE_COUNT - COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME)
 
     # logger.debug("get_feed_request: sex: " + str(sex) + " age_range: " + str(age_range)) # temp
 
     if sex != User.SEX_ANY and age_range != User.AGE_RANGE_ANY:
-        sample = User.objects.filter(sex = sex, age = age_range, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+        sample = User.objects.filter(not_banned_condition, sex = sex, age = age_range).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         # logger.debug("get_feed_request: level1, len(sample)= " + str(len(sample))) # temp
         if len(sample) < 15:
-            sample = User.objects.filter(sex = sex, age = age_range).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+            if sex == User.MALE:
+                sample = User.objects.filter(not_banned_condition, age = age_range).exclude(id__in = exclude_ids_list).order_by('-sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+            else:
+                sample = User.objects.filter(not_banned_condition, age = age_range).exclude(id__in = exclude_ids_list).order_by('sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
             # logger.debug("get_feed_request: level2, len(sample)= " + str(len(sample))) # temp
-            if len(sample) < 15:
-                if sex == User.MALE:
-                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
-                else:
-                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
-                    # logger.debug("get_feed_request: level3, len(sample)= " + str(len(sample))) # temp
-                # sample = User.objects.filter(sex = sex, age = age_range).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
     elif sex == User.SEX_ANY and age_range != User.AGE_RANGE_ANY:
-        sample = User.objects.filter(age = age_range, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+        sample = User.objects.filter(not_banned_condition, age = age_range, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         if len(sample) < 15:
-            sample = User.objects.filter(age = age_range).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+            sample = User.objects.filter(not_banned_condition, age = age_range).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
             if len(sample) < 15:
-                sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                sample = User.objects.filter(not_banned_condition).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
     elif sex != User.SEX_ANY and age_range == User.AGE_RANGE_ANY:
-        sample = User.objects.filter(sex = sex, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+        sample = User.objects.filter(not_banned_condition, sex = sex, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         if len(sample) < 15:
-            sample = User.objects.filter(sex = sex).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+            sample = User.objects.filter(not_banned_condition, sex = sex).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
             if len(sample) < 15:
-                #sample = User.objects.filter(sex = sex).exclude(id__in = [user_id]).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
                 if sex == User.MALE:
-                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                    sample = User.objects.filter(not_banned_condition).exclude(id__in = exclude_ids_list).order_by('-sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
                 else:
-                    sample = User.objects.exclude(id__in = exclude_ids_list).order_by('sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+                    sample = User.objects.filter(not_banned_condition).exclude(id__in = exclude_ids_list).order_by('sex', '-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
     elif sex == User.SEX_ANY and age_range == User.AGE_RANGE_ANY:
-        sample = User.objects.filter(lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+        sample = User.objects.filter(not_banned_condition, lastActivity__gt = timezone.now() - timedelta(seconds = 3600)).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
         if len(sample) < 15:
-            sample = User.objects.exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
+            sample = User.objects.filter(not_banned_condition).exclude(id__in = exclude_ids_list).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].values('id', 'city', 'country', 'avatar', 'status', 'name')
             if len(sample) < 15:
-                sample = User.objects.order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].exclude(id__in = [user_id]).values('id', 'city', 'country', 'avatar', 'status', 'name')
+                sample = User.objects.filter(not_banned_condition).order_by('-lastActivity')[:COUNT_FEED_ENTRYS_RETURNING_AT_A_TIME].exclude(id__in = [user_id]).values('id', 'city', 'country', 'avatar', 'status', 'name')
     else:
         return HttpResponse(
             make_error(explanation="Sample error. Refer to Misha", errorid="21", functionName="get_feed_request"))
 
     for e in sample:
-        e['avatar'] = settings.MEDIA_URL + e['avatar']
+        if e['avatar'] != '':
+            e['avatar'] = MEDIA_URL + e['avatar']
+        else:
+            e['avatar'] = 'None'
 
     return HttpResponse('{"report" : "success", "explanation": "feed has been returned", "user_state": "' + user.user_state + '", "count_incoming_messages": "' + str(user.count_incoming_messages) + '", "users": '+ json.dumps(list(sample), ensure_ascii = False) +'}')
 
 
 #@ratelimit(block=True, rate='10/m')
 @csrf_exempt
-def remove_messages_request(request):
+def remove_messages_request(request): # deprecated 12.12.14
     # example js object: '{"message_ids" : [1,2,3]}'
     message_ids_json_str = None if request.POST.get("message_ids") is None else request.POST.get("message_ids").__str__().strip()
     user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
@@ -422,70 +418,6 @@ def get_fake_message_request(request):
         return HttpResponse('{"report" : "success", "explanation": "messages list has been returned", "message": ' + MESSAGE_FOR_FEMALE + '}')
 
 
-@csrf_exempt
-def change_location_request(request): # deprecated 06.12.14
-    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
-    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
-
-    if user_id is None or token is None:
-        return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="change_location_request"))
-
-    try:
-        country = None if request.POST.get("country") is None else request.POST.get("country").__str__().strip()
-        city = None if request.POST.get("city") is None else request.POST.get("city").__str__().strip()
-    except UnicodeEncodeError as errObj:
-        return HttpResponse(
-            make_error(explanation= errObj.__str__(), errorid="41", functionName="change_location_request"))
-
-    if (country is not None and len(country) == 0) or (city is not None and len(city) == 0):
-        return HttpResponse(
-            make_error(explanation="country or city is too short", errorid="37", functionName="change_location_request"))
-
-    try:
-        user = User.objects.select_related('token').get(id = user_id)
-        if token != user.token.token:
-            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id, functionName="change_location_request"))
-    except (ObjectDoesNotExist, MultipleObjectsReturned):
-        return HttpResponse(
-            make_error(explanation="user id does not exists", errorid="3", functionName="change_location_request"))
-
-    user.country = country
-    user.city = city
-    user.save(update_fields=['country', 'lastActivity', 'city'])
-
-    return HttpResponse('{"report" : "success", "explanation": "User information updated"}')
-
-
-@csrf_exempt
-def change_gcm_request(request): # deprecated 06.12.14
-    user_id = None if request.POST.get("user_id") is None else request.POST.get("user_id").__str__().strip()
-    token = None if request.POST.get("token") is None else request.POST.get("token").__str__().strip()
-    device_id = None if request.POST.get("device_id") is None else request.POST.get("device_id").__str__().strip()
-    gcm_reg_id = None if request.POST.get("gcm_reg_id") is None else request.POST.get("gcm_reg_id").__str__().strip()
-
-    if user_id is None or token is None or device_id is None or device_id is "" or gcm_reg_id is None or gcm_reg_id is "":
-        return HttpResponse(make_error(explanation="missing required argument", errorid="1", functionName="change_gcm_request"))
-
-    try:
-        user = User.objects.select_related('token', 'gcm_device').get(id = user_id)
-        if token != user.token.token:
-            return HttpResponse(make_error(explanation="token is poor", errorid="100", userid=user.id, functionName="change_gcm_request"))
-    except (ObjectDoesNotExist, MultipleObjectsReturned):
-        return HttpResponse(
-            make_error(explanation="user id does not exists", errorid="3", functionName="change_gcm_request"))
-
-    if user.gcm_device is None:
-        gcm_device = Device.objects.create(reg_id = gcm_reg_id, name = user.email, is_active = True, dev_id = device_id)
-        user.gcm_device = gcm_device
-        user.save(update_fields=['gcm_device', 'lastActivity'])
-    else:
-        user.gcm_device.dev_id = device_id
-        user.gcm_device.reg_id = gcm_reg_id
-        user.gcm_device.save()
-
-    return HttpResponse('{"report" : "success", "explanation": "User information about gcm updated"}')
-
-
 #@ratelimit(block=True, rate='10/m')
 @csrf_exempt
 def send_feedback_request(request):
@@ -508,3 +440,5 @@ def send_feedback_request(request):
     Feedback.objects.create(feedback_text = feedback_text, from_user = user)
 
     return HttpResponse('{"report" : "success", "explanation": "Feedback sent"}')
+
+

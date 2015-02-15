@@ -36,6 +36,7 @@ class User(models.Model):
     AGE_RANGE_1 = '1'
     AGE_RANGE_2 = '2'
     AGE_RANGE_3 = '3'
+    # AGE_RANGE_4 = '4'
     AGE_RANGE_ANY = 'ANY'
     MALE = 'M'
     FEMALE = 'F'
@@ -66,6 +67,7 @@ class User(models.Model):
     regDate = models.DateField(auto_now_add=True)
     lastActivity = models.DateTimeField(auto_now=True, db_index=True)
     avatar = models.FileField(upload_to=get_upload_avatar_filename, null=True, blank=True)
+    avatar_preview = models.FileField(upload_to=get_upload_preview_filename, null=True, blank=True)
     status = models.CharField(max_length=140, null=False, blank=True)
     token = models.ForeignKey(Token)
     city = models.CharField(max_length=50, null=True, blank=False)
@@ -77,6 +79,7 @@ class User(models.Model):
     device_model = models.CharField(max_length=50, null=True, blank=True)
     app_version = models.CharField(max_length=20, null=True, blank=True)
     user_state = models.CharField(choices=TYPE_OF_USER_STATE, max_length=2, null=False, blank=False, default=TYPE_OF_USER_STATE[2][0])
+    bookmarks = models.ManyToManyField("self", symmetrical=False, db_table="Server_Bookmarks", db_index=True)
 
     def __unicode__(self):
         return self.email
@@ -84,11 +87,15 @@ class User(models.Model):
 
 @receiver(pre_delete, sender=User)
 def user_avatar_deleter(sender, instance, **kwargs):
-    if not instance.avatar.name:
-        return
+    # if not instance.avatar.name:
+    #     return
 
     if instance.avatar is not None:
         instance.avatar.delete(False)
+
+    if instance.avatar_preview is not None:
+        instance.avatar_preview.delete(False)
+
 
 @receiver(post_delete, sender=User)
 def user_gcm_device_deleter(sender, instance, **kwargs):
@@ -116,11 +123,13 @@ class Message(models.Model):
 
 @receiver(pre_delete, sender=Message)
 def message_photo_deleter(sender, instance, **kwargs):
-    if not instance.photo.name:
-        return
-
+    # if not instance.photo.name:
+    #     return
     if instance.photo is not None:
         instance.photo.delete(False)
+
+    if instance.preview is not None:
+        instance.preview.delete(False)
 
 
 class Error(models.Model):
@@ -151,3 +160,11 @@ class Feedback(models.Model):
 
     def __unicode__(self):
         return str(self.from_user)
+
+
+# class Bookmark(models.Model):
+#     user = models.ForeignKey(User)
+#     bookmark = models.ForeignKey(User)
+#
+#     def __unicode__(self):
+#         return str(self.from_user)
